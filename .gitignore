@@ -37,3 +37,20 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+
+# Pipeline output directories
+output/
+results/
+*_output/
+
+# Intermediate BED files
+*.bed
+*.bw.txt
+*.bigwig
+*.bw
+
+# Backup files
+*.bkp
+
+# Log files
+*.log

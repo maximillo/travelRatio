@@ -1,0 +1,102 @@
+# TravelRatio Configuration File
+# This file contains all configurable parameters for the Travel Ratio computation pipeline
+
+# Input files and paths
+input:
+  # Path to the HOMER peak file or initial gene annotation file
+  homer_peak_file: "refGene_hg19_genebody.new.bed"
+
+  # BigWig file for selecting transcripts (e.g., control or reference sample)
+  selection_bigwig: "control.signal.bigwig"
+
+  # BigWig file for final TR computation (your sample of interest)
+  sample_bigwig: "sample.fc.signal.bw"
+
+# Output configuration
+output:
+  # Base directory for all output files
+  output_dir: "output"
+
+  # Prefix for output files
+  prefix: "travel_ratio"
+
+  # Keep intermediate files (TRUE/FALSE)
+  keep_intermediate: TRUE
+
+# Gene filtering parameters
+gene_filters:
+  # Minimum gene length in base pairs
+  min_gene_length: 1000
+
+  # Minimum distance between genes to avoid overlap (bp)
+  distance_cutoff: 1000
+
+# TSR (Transcription Start Region) parameters
+tsr_parameters:
+  # Extension upstream of TSS (base pairs)
+  upstream_extension: 50
+
+  # Extension downstream of TSS (base pairs)
+  downstream_extension: 300
+
+# Gene body parameters
+genebody_parameters:
+  # Calculate extension based on distance_cutoff
+  # This will be computed as distance_cutoff / 2
+  auto_calculate_extension: TRUE
+
+  # Manual extension (only used if auto_calculate_extension is FALSE)
+  manual_extension: 500
+
+# Transcript selection parameters
+transcript_selection:
+  # Minimum mean signal cutoff for transcript selection
+  signal_cutoff: 0.25
+
+  # Selection method: "highest" (default) selects transcript with highest signal per gene
+  selection_method: "highest"
+
+# External tools
+tools:
+  # Path to bigWigAverageOverBed (leave as command name if in PATH)
+  bigwig_average_over_bed: "bigWigAverageOverBed"
+
+  # Path to bedtools (leave as command name if in PATH)
+  bedtools: "bedtools"
+
+# Plotting parameters
+plotting:
+  # Generate diagnostic plots (TRUE/FALSE)
+  generate_plots: TRUE
+
+  # Plot format (png, pdf, svg)
+  plot_format: "png"
+
+  # Plot resolution (DPI)
+  plot_dpi: 300
+
+  # Plot width and height (inches)
+  plot_width: 8
+  plot_height: 6
+
+# Logging
+logging:
+  # Log level: DEBUG, INFO, WARN, ERROR
+  log_level: "INFO"
+
+  # Save log to file (TRUE/FALSE)
+  save_log: TRUE
+
+  # Log file name (in output_dir)
+  log_file: "travel_ratio.log"
+
+# Advanced options
+advanced:
+  # Number of cores for parallel processing (0 = auto-detect)
+  n_cores: 1
+
+  # Create backups of existing output files (TRUE/FALSE)
+  backup_existing: TRUE
+
+  # Random seed for reproducibility
+  random_seed: 42

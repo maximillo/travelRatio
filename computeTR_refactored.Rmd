@@ -1,0 +1,580 @@
+---
+title: "Travel Ratio Computation - Refactored Version"
+author: "Xiaojun Max Xu, Jinting Li (Original); Refactored by Claude"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: cosmo
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = TRUE,
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 300
+)
+```
+
+# Overview
+
+This notebook computes the **Travel Ratio (TR)** from ChIP-seq data. TR measures the ratio of gene body signal to TSR (Transcription Start Region) signal, indicating transcriptional elongation efficiency.
+
+**Key improvements in this refactored version:**
+
+- Modular, reusable functions
+- Configuration file support (YAML)
+- Comprehensive error handling and validation
+- Better documentation and logging
+- Replaced bash/Python code with native R functions
+- Improved plots and visualizations
+- No hardcoded values
+
+---
+
+# Setup
+
+## Load Required Libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Required packages
+required_packages <- c("yaml", "dplyr", "tidyr", "ggplot2", "readr",
+                       "stringr", "knitr", "DT")
+
+# Install missing packages
+missing_packages <- required_packages[!required_packages %in%
+                                      installed.packages()[,"Package"]]
+if(length(missing_packages) > 0) {
+  message("Installing missing packages: ", paste(missing_packages, collapse = ", "))
+  install.packages(missing_packages, repos = "https://cloud.r-project.org")
+}
+
+# Load libraries
+suppressPackageStartupMessages({
+  library(yaml)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(readr)
+  library(stringr)
+  library(knitr)
+  library(DT)
+})
+
+# Set ggplot theme
+theme_set(theme_minimal())
+```
+
+## Load Configuration
+
+```{r config}
+# Load configuration from YAML file
+config_file <- "config.yaml"
+
+if (!file.exists(config_file)) {
+  stop("Configuration file not found: ", config_file,
+       "\nPlease create config.yaml or update the path.")
+}
+
+config <- yaml::read_yaml(config_file)
+
+# Display configuration
+cat("Configuration loaded successfully!\n\n")
+cat("Key parameters:\n")
+cat(sprintf("  - Minimum gene length: %d bp\n",
+            config$gene_filters$min_gene_length))
+cat(sprintf("  - TSR region: -%d to +%d bp from TSS\n",
+            config$tsr_parameters$upstream_extension,
+            config$tsr_parameters$downstream_extension))
+cat(sprintf("  - Signal cutoff: %.2f\n",
+            config$transcript_selection$signal_cutoff))
+cat(sprintf("  - Distance cutoff: %d bp\n",
+            config$gene_filters$distance_cutoff))
+```
+
+## Source Core Functions
+
+```{r source_functions}
+# Source the main R script containing all functions
+# This avoids code duplication
+source("compute_travel_ratio.R")
+
+cat("Core functions loaded successfully!\n")
+```
+
+---
+
+# Pipeline Execution
+
+## Step 1: Setup Output Directory
+
+```{r setup_output}
+output_dir <- config$output$output_dir
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Create subdirectories
+subdirs <- c("bed_files", "signals", "plots", "logs")
+for (subdir in subdirs) {
+  subdir_path <- file.path(output_dir, subdir)
+  if (!dir.exists(subdir_path)) {
+    dir.create(subdir_path, recursive = TRUE)
+  }
+}
+
+cat("Output directory structure created at:", output_dir, "\n")
+```
+
+## Step 2: Validate Tools
+
+```{r validate_tools}
+# Check if required external tools are available
+tools_to_check <- c(
+  bedtools = config$tools$bedtools,
+  bigWigAverageOverBed = config$tools$bigwig_average_over_bed
+)
+
+cat("Checking for required external tools...\n\n")
+
+for (tool_name in names(tools_to_check)) {
+  tool_path <- tools_to_check[tool_name]
+  result <- suppressWarnings(system2("which", tool_path,
+                                     stdout = TRUE, stderr = TRUE))
+
+  if (length(result) == 0 || attr(result, "status") == 1) {
+    cat("  [✗]", tool_name, "(", tool_path, ") - NOT FOUND\n")
+    warning("Tool not found: ", tool_path,
+           "\nPlease install or update path in config.yaml")
+  } else {
+    cat("  [✓]", tool_name, "found at:", result, "\n")
+  }
+}
+```
+
+## Step 3: Prepare Gene Annotations
+
+Convert HOMER peak file to BED format and filter genes by length.
+
+```{r prepare_genes}
+prefix <- config$output$prefix
+bed_dir <- file.path(output_dir, "bed_files")
+
+# File paths
+bed_filtered <- file.path(bed_dir,
+                         paste0(prefix, "_genes_gt",
+                               config$gene_filters$min_gene_length, "bp.bed"))
+
+# Only run if input file exists
+if (file.exists(config$input$homer_peak_file)) {
+  convert_and_filter_peaks(
+    config$input$homer_peak_file,
+    bed_filtered,
+    config$gene_filters$min_gene_length
+  )
+
+  # Preview
+  preview <- read_tsv(bed_filtered,
+                     col_names = c("chr", "start", "end", "name", "score", "strand"),
+                     col_types = "ciicic", show_col_types = FALSE,
+                     n_max = 5)
+
+  cat("\nPreview of filtered genes:\n")
+  print(kable(preview))
+
+} else {
+  cat("WARNING: Input HOMER peak file not found:",
+      config$input$homer_peak_file, "\n")
+  cat("Please update the path in config.yaml\n")
+}
+```
+
+## Step 4: Generate TSR Regions
+
+```{r generate_tsr}
+tsr_for_selection <- file.path(bed_dir, paste0(prefix, "_tsr_for_selection.bed"))
+
+if (file.exists(bed_filtered)) {
+  generate_tsr_bed(
+    bed_filtered,
+    tsr_for_selection,
+    config$tsr_parameters$upstream_extension,
+    config$tsr_parameters$downstream_extension
+  )
+
+  cat("\nTSR regions generated successfully\n")
+} else {
+  cat("Skipping TSR generation - filtered BED file not found\n")
+}
+```
+
+## Step 5: Compute Signal for Transcript Selection
+
+```{r compute_selection_signal}
+signal_dir <- file.path(output_dir, "signals")
+selection_signal <- file.path(signal_dir, paste0(prefix, "_selection_signal.txt"))
+
+if (file.exists(config$input$selection_bigwig) && file.exists(bed_filtered)) {
+
+  compute_signal_over_bed(
+    config$input$selection_bigwig,
+    bed_filtered,
+    selection_signal,
+    config$tools$bigwig_average_over_bed
+  )
+
+  # Read and display summary
+  signal_data <- read_tsv(selection_signal,
+                         col_names = c("name", "size", "covered", "sum",
+                                      "mean_overall", "mean_exon"),
+                         col_types = "ciiddd", show_col_types = FALSE)
+
+  cat("\nSignal statistics:\n")
+  print(summary(signal_data$mean_overall))
+
+} else {
+  cat("Skipping signal computation - input files not found\n")
+}
+```
+
+### Visualize Signal Distribution
+
+```{r plot_selection_signal, fig.width=10, fig.height=6}
+if (exists("signal_data")) {
+
+  # CDF plot
+  p1 <- ggplot(signal_data, aes(x = mean_overall)) +
+    stat_ecdf(geom = "point", size = 0.5, color = "#2E86AB") +
+    labs(
+      title = "Cumulative Distribution of Selection Signal",
+      x = "Mean Signal",
+      y = "Cumulative Proportion",
+      caption = sprintf("n = %d regions", nrow(signal_data))
+    ) +
+    geom_vline(xintercept = config$transcript_selection$signal_cutoff,
+               linetype = "dashed", color = "red", size = 1) +
+    annotate("text",
+             x = config$transcript_selection$signal_cutoff * 1.5,
+             y = 0.5,
+             label = sprintf("Cutoff = %.2f",
+                           config$transcript_selection$signal_cutoff),
+             color = "red")
+
+  # Histogram
+  p2 <- ggplot(signal_data, aes(x = mean_overall)) +
+    geom_histogram(bins = 50, fill = "#2E86AB", alpha = 0.7) +
+    geom_vline(xintercept = config$transcript_selection$signal_cutoff,
+               linetype = "dashed", color = "red", size = 1) +
+    labs(
+      title = "Distribution of Selection Signal",
+      x = "Mean Signal",
+      y = "Count"
+    ) +
+    scale_y_continuous(labels = scales::comma)
+
+  print(p1)
+  print(p2)
+
+  # Save plots
+  plot_dir <- file.path(output_dir, "plots")
+  ggsave(file.path(plot_dir, paste0(prefix, "_selection_signal_cdf.png")),
+         p1, width = 10, height = 6, dpi = 300)
+  ggsave(file.path(plot_dir, paste0(prefix, "_selection_signal_hist.png")),
+         p2, width = 10, height = 6, dpi = 300)
+}
+```
+
+## Step 6: Select Unique Transcripts
+
+```{r select_transcripts}
+unique_transcripts <- file.path(signal_dir, paste0(prefix, "_unique_transcripts.txt"))
+
+if (file.exists(selection_signal)) {
+  select_unique_transcripts(
+    selection_signal,
+    unique_transcripts,
+    config$transcript_selection$signal_cutoff
+  )
+
+  # Display sample
+  unique_data <- read_tsv(unique_transcripts,
+                         col_names = c("region_name", "size", "covered",
+                                      "sum", "mean_overall", "mean_exon"),
+                         col_types = "ciiddd", show_col_types = FALSE)
+
+  cat("\nTop 10 selected transcripts by signal:\n")
+  top_transcripts <- unique_data %>%
+    arrange(desc(mean_overall)) %>%
+    head(10)
+
+  print(kable(top_transcripts, digits = 3))
+}
+```
+
+## Step 7: Extract and Filter Genes
+
+```{r extract_genes}
+bed_unique <- file.path(bed_dir, paste0(prefix, "_unique_genes.bed"))
+bed_nonoverlap <- file.path(bed_dir, paste0(prefix, "_nonoverlapping_genes.bed"))
+
+if (file.exists(unique_transcripts) && file.exists(bed_filtered)) {
+
+  # Extract BED regions
+  extract_selected_bed_regions(unique_transcripts, bed_filtered, bed_unique)
+
+  # Remove overlapping genes
+  remove_overlapping_genes(
+    bed_unique,
+    bed_nonoverlap,
+    config$gene_filters$distance_cutoff,
+    config$tools$bedtools
+  )
+
+  # Summary
+  n_unique <- as.numeric(system(sprintf("wc -l < %s", bed_unique), intern = TRUE))
+  n_final <- as.numeric(system(sprintf("wc -l < %s", bed_nonoverlap), intern = TRUE))
+
+  cat(sprintf("\nFiltering summary:\n"))
+  cat(sprintf("  - Unique genes: %d\n", n_unique))
+  cat(sprintf("  - Non-overlapping genes: %d\n", n_final))
+  cat(sprintf("  - Genes removed: %d (%.1f%%)\n",
+              n_unique - n_final,
+              100 * (n_unique - n_final) / n_unique))
+}
+```
+
+## Step 8: Generate Final TSR and Gene Body Regions
+
+```{r generate_final_regions}
+tsr_final <- file.path(bed_dir, paste0(prefix, "_tsr_final.bed"))
+gb_final <- file.path(bed_dir, paste0(prefix, "_genebody_final.bed"))
+
+if (file.exists(bed_nonoverlap)) {
+
+  # Calculate gene body extension
+  if (config$genebody_parameters$auto_calculate_extension) {
+    gb_extension <- config$gene_filters$distance_cutoff / 2
+    cat("Auto-calculated gene body extension:", gb_extension, "bp\n")
+  } else {
+    gb_extension <- config$genebody_parameters$manual_extension
+    cat("Using manual gene body extension:", gb_extension, "bp\n")
+  }
+
+  # Generate regions
+  generate_tsr_and_genebody_beds(
+    bed_nonoverlap,
+    tsr_final,
+    gb_final,
+    config$tsr_parameters$upstream_extension,
+    config$tsr_parameters$downstream_extension,
+    gb_extension
+  )
+
+  cat("\nFinal TSR and gene body regions created\n")
+}
+```
+
+## Step 9: Compute Signals Over Final Regions
+
+```{r compute_final_signals}
+tsr_signal <- file.path(signal_dir, paste0(prefix, "_tsr_signal.txt"))
+gb_signal <- file.path(signal_dir, paste0(prefix, "_genebody_signal.txt"))
+
+if (file.exists(config$input$sample_bigwig) &&
+    file.exists(tsr_final) && file.exists(gb_final)) {
+
+  cat("Computing TSR signal...\n")
+  compute_signal_over_bed(
+    config$input$sample_bigwig,
+    tsr_final,
+    tsr_signal,
+    config$tools$bigwig_average_over_bed
+  )
+
+  cat("\nComputing gene body signal...\n")
+  compute_signal_over_bed(
+    config$input$sample_bigwig,
+    gb_final,
+    gb_signal,
+    config$tools$bigwig_average_over_bed
+  )
+
+  cat("\nSignal computation completed\n")
+
+} else {
+  cat("Skipping final signal computation - input files not found\n")
+}
+```
+
+## Step 10: Compute Travel Ratio
+
+```{r compute_tr}
+tr_output <- file.path(output_dir, paste0(prefix, "_travel_ratio.txt"))
+
+if (file.exists(tsr_signal) && file.exists(gb_signal)) {
+
+  tr_data <- compute_travel_ratio(tsr_signal, gb_signal, tr_output)
+
+  # Display statistics
+  cat("\nTravel Ratio Statistics:\n")
+  print(summary(tr_data$travel_ratio))
+
+  # Display top/bottom genes
+  cat("\n### Top 10 genes by Travel Ratio (highest elongation):\n")
+  top_tr <- tr_data %>%
+    filter(!is.na(travel_ratio)) %>%
+    arrange(desc(travel_ratio)) %>%
+    head(10) %>%
+    select(name, tsr_mean, gb_mean, travel_ratio)
+
+  print(kable(top_tr, digits = 3))
+
+  cat("\n### Bottom 10 genes by Travel Ratio (lowest elongation):\n")
+  bottom_tr <- tr_data %>%
+    filter(!is.na(travel_ratio)) %>%
+    arrange(travel_ratio) %>%
+    head(10) %>%
+    select(name, tsr_mean, gb_mean, travel_ratio)
+
+  print(kable(bottom_tr, digits = 3))
+
+} else {
+  cat("Skipping TR computation - signal files not found\n")
+}
+```
+
+### Visualize Travel Ratio Distribution
+
+```{r plot_tr, fig.width=12, fig.height=8}
+if (exists("tr_data")) {
+
+  # Remove NA and infinite values for plotting
+  tr_plot_data <- tr_data %>%
+    filter(!is.na(travel_ratio), is.finite(travel_ratio))
+
+  # CDF plot
+  p1 <- ggplot(tr_plot_data, aes(x = travel_ratio)) +
+    stat_ecdf(geom = "point", size = 0.5, color = "#A23B72") +
+    labs(
+      title = "Cumulative Distribution of Travel Ratio",
+      x = "Travel Ratio (Gene Body / TSR)",
+      y = "Cumulative Proportion",
+      caption = sprintf("n = %d genes", nrow(tr_plot_data))
+    )
+
+  # Histogram
+  p2 <- ggplot(tr_plot_data, aes(x = travel_ratio)) +
+    geom_histogram(bins = 50, fill = "#A23B72", alpha = 0.7) +
+    labs(
+      title = "Distribution of Travel Ratio",
+      x = "Travel Ratio (Gene Body / TSR)",
+      y = "Count"
+    ) +
+    scale_y_continuous(labels = scales::comma)
+
+  # Density plot
+  p3 <- ggplot(tr_plot_data, aes(x = travel_ratio)) +
+    geom_density(fill = "#A23B72", alpha = 0.5, color = "#A23B72") +
+    labs(
+      title = "Density Plot of Travel Ratio",
+      x = "Travel Ratio (Gene Body / TSR)",
+      y = "Density"
+    )
+
+  # Scatter plot: TSR vs GB signal
+  p4 <- ggplot(tr_plot_data, aes(x = tsr_mean, y = gb_mean)) +
+    geom_point(alpha = 0.3, size = 0.5, color = "#A23B72") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(
+      title = "TSR vs Gene Body Signal",
+      x = "TSR Mean Signal (log10)",
+      y = "Gene Body Mean Signal (log10)",
+      caption = "Red line: TR = 1"
+    )
+
+  # Print plots
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+
+  # Save plots
+  plot_dir <- file.path(output_dir, "plots")
+  ggsave(file.path(plot_dir, paste0(prefix, "_travel_ratio_cdf.png")),
+         p1, width = 10, height = 6, dpi = 300)
+  ggsave(file.path(plot_dir, paste0(prefix, "_travel_ratio_hist.png")),
+         p2, width = 10, height = 6, dpi = 300)
+  ggsave(file.path(plot_dir, paste0(prefix, "_travel_ratio_density.png")),
+         p3, width = 10, height = 6, dpi = 300)
+  ggsave(file.path(plot_dir, paste0(prefix, "_tsr_vs_gb_scatter.png")),
+         p4, width = 10, height = 6, dpi = 300)
+}
+```
+
+---
+
+# Interactive Data Exploration
+
+If you have the DT package installed, you can explore the results interactively:
+
+```{r interactive_table, eval=exists("tr_data")}
+if (exists("tr_data") && requireNamespace("DT", quietly = TRUE)) {
+
+  tr_display <- tr_data %>%
+    filter(!is.na(travel_ratio)) %>%
+    mutate(
+      travel_ratio = round(travel_ratio, 3),
+      tsr_mean = round(tsr_mean, 3),
+      gb_mean = round(gb_mean, 3)
+    ) %>%
+    arrange(desc(travel_ratio))
+
+  DT::datatable(
+    tr_display,
+    caption = "Travel Ratio Results - Interactive Table",
+    options = list(
+      pageLength = 25,
+      scrollX = TRUE,
+      searchHighlight = TRUE
+    ),
+    filter = "top"
+  )
+}
+```
+
+---
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```
+
+---
+
+# Summary
+
+This refactored notebook provides:
+
+1. **Improved code organization** - Modular functions with clear responsibilities
+2. **Better error handling** - Validates inputs and provides informative messages
+3. **Configuration management** - All parameters in a YAML file
+4. **Enhanced visualizations** - Multiple plot types for better insights
+5. **Comprehensive documentation** - Clear explanations of each step
+6. **Reproducibility** - Session info and parameter logging
+7. **Native R implementation** - No dependency on Python or excessive bash commands
+
+For batch processing or automated workflows, use the standalone R script:
+
+```bash
+Rscript compute_travel_ratio.R --config config.yaml
+```
